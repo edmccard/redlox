@@ -39,7 +39,9 @@ fn repl(vm: &mut Vm) -> Result<()> {
             continue;
         } else {
             source.push(line);
-            vm.interpret(source.join("\n"))?;
+            if let Err(e) = vm.interpret(source.join("\n")) {
+                println!("{}", e)
+            }
             source.clear();
         }
     }

@@ -15,13 +15,15 @@ type Bytecode = u16;
     Ord,
     PartialOrd,
     FromPrimitive,
-    num_enum::Default,
+    num_enum::Default
 )]
 #[repr(u8)]
 pub enum Op {
     Nil,
     True,
     False,
+    Pop,
+    Print,
     Return,
     Not,
     Negate,
@@ -33,6 +35,9 @@ pub enum Op {
     Multiply,
     Divide,
     Constant,
+    DefineGlobal,
+    GetGlobal,
+    SetGlobal,
     Extend,
     #[num_enum(default)]
     Unknown,
@@ -186,6 +191,7 @@ impl<'a> Iterator for InstIter<'a> {
     }
 }
 
+// TODO: more efficient representation
 struct LineMap {
     lines: Vec<u32>,
     current_line: u32,
@@ -220,17 +226,22 @@ impl LineMap {
 
 #[cfg(debug_assertions)]
 impl Chunk {
-    pub fn disassemble(&self, name: &str) {
+    pub fn disassemble<T: fmt::Display>(&self, name: &str, sym_names: &[T]) {
         println!("== {name} ==");
         let mut offset = 0;
         for inst in self.instructions() {
             print!("{:4} ", self.get_line(offset));
-            self.disassemble_instruction(inst, offset);
+            self.disassemble_instruction(inst, offset, sym_names);
             offset += inst.len;
         }
     }
 
-    pub fn disassemble_instruction(&self, inst: Instruction, offset: usize) {
+    pub fn disassemble_instruction<T: fmt::Display>(
+        &self,
+        inst: Instruction,
+        offset: usize,
+        sym_names: &[T],
+    ) {
         print!("{:04} ", offset);
         match inst.opcode {
             op if op < Op::Constant => {
@@ -238,6 +249,9 @@ impl Chunk {
             }
             Op::Constant => {
                 self.disassemble_const(inst.operand);
+            }
+            Op::DefineGlobal | Op::GetGlobal | Op::SetGlobal => {
+                self.disassemble_sym(inst.opcode, inst.operand, sym_names);
             }
             _ => {
                 println!("Unknown opcode {}", inst.opcode as u8);
@@ -251,6 +265,20 @@ impl Chunk {
             println!("(out of range)");
         } else {
             println!("{}", self.constants[arg as usize]);
+        }
+    }
+
+    fn disassemble_sym<T: fmt::Display>(
+        &self,
+        op: Op,
+        arg: u32,
+        sym_names: &[T],
+    ) {
+        print!("{:10} {:08} ", format!("{}", op), arg);
+        if arg as usize >= sym_names.len() {
+            println!("(out of range)");
+        } else {
+            println!("{}", sym_names[arg as usize]);
         }
     }
 }

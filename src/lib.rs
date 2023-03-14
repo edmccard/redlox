@@ -2,6 +2,7 @@ use std::{fmt, rc::Rc};
 
 pub use anyhow::Result;
 pub use parser::Parser;
+use vm::Obj;
 pub use vm::Vm;
 
 mod code;
@@ -15,7 +16,7 @@ pub(crate) enum Value {
     Nil,
     Boolean(bool),
     Number(f64),
-    String(Rc<str>),
+    Object(Obj),
 }
 
 impl Value {
@@ -29,7 +30,7 @@ impl fmt::Display for Value {
             Value::Nil => write!(f, "nil"),
             Value::Boolean(v) => write!(f, "{}", v),
             Value::Number(v) => write!(f, "{}", v),
-            Value::String(v) => write!(f, "{}", v),
+            Value::Object(v) => write!(f, "{}", v.borrow()),
         }
     }
 }
