@@ -35,6 +35,7 @@ impl fmt::Display for Payload {
     }
 }
 
+// TODO: faster global access
 pub struct Vm {
     stack: Vec<Value>,
     heap: Vec<Weak<RefCell<Object>>>,
@@ -43,7 +44,7 @@ pub struct Vm {
 }
 
 impl Vm {
-    const MAX_STACK: usize = 1024;
+    const MAX_STACK: usize = 65536;
 
     pub fn init() -> Self {
         Vm {
@@ -168,6 +169,15 @@ impl Vm {
                             self.symbols.names[inst.operand() as usize]
                         ))),
                     }
+                }
+                Op::GetLocal => {
+                    let local = self.stack[inst.operand() as usize].clone();
+                    self.push(local)
+                }
+                Op::SetLocal => {
+                    let val = self.peek(0);
+                    self.stack[inst.operand() as usize] = val.clone();
+                    Ok(())
                 }
                 _ => Vm::error("unknown opcode"),
             };

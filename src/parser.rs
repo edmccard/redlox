@@ -51,22 +51,24 @@ impl Prec {
 
 pub struct Parser {
     scanner: Scanner,
-    code: Vec<Chunk>,
     current: Token,
     previous: Token,
     had_error: bool,
     panic_mode: bool,
+    locals: Locals,
+    code: Vec<Chunk>,
 }
 
 impl Parser {
     pub fn new(source: String) -> Parser {
         Parser {
             scanner: Scanner::new(source),
-            code: Vec::new(),
             current: Token::default(),
             previous: Token::default(),
             had_error: false,
             panic_mode: false,
+            locals: Locals::new(),
+            code: Vec::new(),
         }
     }
 
@@ -180,6 +182,7 @@ impl Parser {
         self.scanner.token_text(self.previous)
     }
 
+    // TODO: ternary operator
     fn parse_precedence(&mut self, precedence: Prec, vm: &mut Vm) {
         self.advance();
 
@@ -243,12 +246,23 @@ impl Parser {
 
     fn variable(&mut self, vm: &mut Vm, can_assign: bool) {
         let sym = vm.get_symbol(self.token_text());
+        let (op_set, op_get, arg) = match self.locals.resolve(sym) {
+            None => (Op::SetGlobal, Op::GetGlobal, sym),
+            Some((slot, is_initialized)) => {
+                if !is_initialized {
+                    self.error(
+                        "can't read local variable in its own initializer",
+                    );
+                }
+                (Op::SetLocal, Op::GetLocal, slot as u32)
+            }
+        };
 
         if can_assign && self.matches(TokenType::Equal) {
             self.expression(vm);
-            self.emit_op_arg(Op::SetGlobal, sym);
+            self.emit_op_arg(op_set, arg);
         } else {
-            self.emit_op_arg(Op::GetGlobal, sym)
+            self.emit_op_arg(op_get, arg);
         }
     }
 
@@ -266,7 +280,13 @@ impl Parser {
 
     fn var_declaration(&mut self, vm: &mut Vm) {
         self.consume(TokenType::Identifier, "expect variable name");
+
         let sym = vm.get_symbol(self.token_text());
+
+        if !self.locals.top_level() && !self.locals.add(sym) {
+            self.error("already a variable with this name in this scope");
+        }
+
         if self.matches(TokenType::Equal) {
             self.expression(vm);
         } else {
@@ -276,12 +296,21 @@ impl Parser {
             TokenType::Semicolon,
             "expect ';' after variable declaration",
         );
-        self.emit_op_arg(Op::DefineGlobal, sym);
+
+        if self.locals.top_level() {
+            self.emit_op_arg(Op::DefineGlobal, sym);
+        } else {
+            self.locals.mark_initialized();
+        }
     }
 
     fn statement(&mut self, vm: &mut Vm) {
         if self.matches(TokenType::Print) {
             self.print_statement(vm);
+        } else if self.matches(TokenType::LeftBrace) {
+            self.begin_scope();
+            self.block(vm);
+            self.end_scope();
         } else {
             self.expression_statement(vm);
         }
@@ -291,6 +320,14 @@ impl Parser {
         self.expression(vm);
         self.consume(TokenType::Semicolon, "expect ';' after value");
         self.emit_op(Op::Print);
+    }
+
+    fn block(&mut self, vm: &mut Vm) {
+        while !self.check(TokenType::RightBrace) && !self.check(TokenType::Eof)
+        {
+            self.declaration(vm);
+        }
+        self.consume(TokenType::RightBrace, "expect '}' after block");
     }
 
     fn expression_statement(&mut self, vm: &mut Vm) {
@@ -368,6 +405,16 @@ impl Parser {
         chunk.write_op_arg(Op::Constant, arg);
     }
 
+    fn begin_scope(&mut self) {
+        self.locals.begin_scope();
+    }
+
+    fn end_scope(&mut self) {
+        for i in 0..self.locals.end_scope() {
+            self.emit_op(Op::Pop);
+        }
+    }
+
     fn scan_error(&mut self, err: Error) {
         self.report_error(self.previous.line(), format!(": {}", err));
     }
@@ -413,5 +460,71 @@ impl Parser {
                 _ => self.advance(),
             }
         }
+    }
+}
+
+struct Locals {
+    depth: i32,
+    locals: Vec<Local>,
+}
+
+struct Local {
+    sym: u32,
+    depth: i32,
+}
+
+impl Locals {
+    fn new() -> Self {
+        Locals {
+            depth: 0,
+            locals: Vec::new(),
+        }
+    }
+
+    fn top_level(&self) -> bool {
+        self.depth == 0
+    }
+
+    fn add(&mut self, sym: u32) -> bool {
+        for local in self.locals.iter().rev() {
+            if local.depth != -1 && local.depth < self.depth {
+                break;
+            }
+            if local.sym == sym {
+                return false;
+            }
+        }
+        self.locals.push(Local { sym, depth: -1 });
+        true
+    }
+
+    fn resolve(&self, sym: u32) -> Option<(usize, bool)> {
+        let idx = self.locals.iter().rev().position(|local| local.sym == sym);
+        idx.map(|i| {
+            let slot = self.locals.len() - i - 1;
+            (slot, self.locals[slot].depth != -1)
+        })
+    }
+
+    fn mark_initialized(&mut self) {
+        let idx = self.locals.len() - 1;
+
+        self.locals[idx].depth = self.depth;
+    }
+
+    fn begin_scope(&mut self) {
+        self.depth += 1;
+    }
+
+    fn end_scope(&mut self) -> usize {
+        self.depth -= 1;
+        let mut count = 0usize;
+        while !self.locals.is_empty()
+            && self.locals[self.locals.len() - 1].depth > self.depth
+        {
+            count += 1;
+            self.locals.pop();
+        }
+        count
     }
 }

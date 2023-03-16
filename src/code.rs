@@ -38,6 +38,8 @@ pub enum Op {
     DefineGlobal,
     GetGlobal,
     SetGlobal,
+    GetLocal,
+    SetLocal,
     Extend,
     #[num_enum(default)]
     Unknown,
@@ -247,6 +249,7 @@ impl Chunk {
             op if op < Op::Constant => {
                 println!("{}", op);
             }
+            Op::Unknown => println!("Unknown opcode {}", inst.opcode as u8),
             Op::Constant => {
                 self.disassemble_const(inst.operand);
             }
@@ -254,13 +257,18 @@ impl Chunk {
                 self.disassemble_sym(inst.opcode, inst.operand, sym_names);
             }
             _ => {
-                println!("Unknown opcode {}", inst.opcode as u8);
+                Chunk::disassemble_op_arg(inst.opcode, inst.operand);
+                println!();
             }
         }
     }
 
+    fn disassemble_op_arg(op: Op, arg: u32) {
+        print!("{:10} {:08} ", format!("{}", op), arg);
+    }
+
     fn disassemble_const(&self, arg: u32) {
-        print!("{:10} {:08} ", format!("{}", Op::Constant), arg);
+        Chunk::disassemble_op_arg(Op::Constant, arg);
         if arg as usize >= self.constants.len() {
             println!("(out of range)");
         } else {
@@ -274,7 +282,7 @@ impl Chunk {
         arg: u32,
         sym_names: &[T],
     ) {
-        print!("{:10} {:08} ", format!("{}", op), arg);
+        Chunk::disassemble_op_arg(op, arg);
         if arg as usize >= sym_names.len() {
             println!("(out of range)");
         } else {
