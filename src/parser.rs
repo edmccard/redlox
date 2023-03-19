@@ -82,7 +82,7 @@ impl Parser {
         self.advance();
 
         while !(self.matches(TokenType::Eof)) {
-            self.declaration(vm);
+            self.declaration(vm, None);
         }
 
         self.emit_op(Op::Return);
@@ -273,11 +273,11 @@ impl Parser {
         }
     }
 
-    fn declaration(&mut self, vm: &mut Vm) {
+    fn declaration(&mut self, vm: &mut Vm, loop_: Option<LoopInfo>) {
         if self.matches(TokenType::Var) {
             self.var_declaration(vm);
         } else {
-            self.statement(vm);
+            self.statement(vm, loop_);
         }
 
         if self.panic_mode {
@@ -311,22 +311,57 @@ impl Parser {
         }
     }
 
-    fn statement(&mut self, vm: &mut Vm) {
+    fn statement(&mut self, vm: &mut Vm, loop_: Option<LoopInfo>) {
         if self.matches(TokenType::Print) {
             self.print_statement(vm);
         } else if self.matches(TokenType::For) {
             self.for_statement(vm);
         } else if self.matches(TokenType::If) {
-            self.if_statement(vm);
+            self.if_statement(vm, loop_);
         } else if self.matches(TokenType::While) {
             self.while_statement(vm);
+        } else if self.matches(TokenType::Break) {
+            self.break_statement(loop_);
+        } else if self.matches(TokenType::Continue) {
+            self.continue_statement(loop_);
         } else if self.matches(TokenType::LeftBrace) {
             self.begin_scope();
-            self.block(vm);
+            self.block(vm, loop_);
             self.end_scope();
         } else {
             self.expression_statement(vm);
         }
+    }
+
+    fn break_statement(&mut self, loop_: Option<LoopInfo>) {
+        self.consume(TokenType::Semicolon, "expect ';' after 'break'");
+        if loop_.is_none() {
+            self.error("'break' outside of loop");
+            return;
+        }
+
+        let loop_ = loop_.unwrap();
+        let n = self.locals.count_to_depth(loop_.depth);
+        if n > 0 {
+            self.emit_op_arg(Op::PopN, n as u32);
+        }
+        self.emit_op(Op::False);
+        self.emit_loop(loop_.exit_jump);
+    }
+
+    fn continue_statement(&mut self, loop_: Option<LoopInfo>) {
+        self.consume(TokenType::Semicolon, "expect ';' after 'continue'");
+        if loop_.is_none() {
+            self.error("'continue' outside of loop");
+            return;
+        }
+
+        let loop_ = loop_.unwrap();
+        let n = self.locals.count_to_depth(loop_.depth);
+        if n > 0 {
+            self.emit_op_arg(Op::PopN, n as u32);
+        }
+        self.emit_loop(loop_.loop_start);
     }
 
     fn print_statement(&mut self, vm: &mut Vm) {
@@ -337,6 +372,7 @@ impl Parser {
 
     fn for_statement(&mut self, vm: &mut Vm) {
         self.begin_scope();
+
         self.consume(TokenType::LeftParen, "expect '(' after for");
         if self.matches(TokenType::Semicolon) {
             // no initializer
@@ -374,7 +410,12 @@ impl Parser {
             self.patch_jump(body_jump);
         }
 
-        self.statement(vm);
+        let loop_ = Some(LoopInfo {
+            depth: self.locals.depth,
+            loop_start,
+            exit_jump,
+        });
+        self.statement(vm, loop_);
         self.emit_loop(loop_start);
 
         self.patch_jump(exit_jump);
@@ -383,20 +424,20 @@ impl Parser {
         self.end_scope();
     }
 
-    fn if_statement(&mut self, vm: &mut Vm) {
+    fn if_statement(&mut self, vm: &mut Vm, loop_: Option<LoopInfo>) {
         self.consume(TokenType::LeftParen, "expect '(' after 'if'");
         self.expression(vm);
         self.consume(TokenType::RightParen, "expect ')' after condition");
 
         let then_jump = self.emit_jump(Op::JumpIfFalse);
         self.emit_op(Op::Pop);
-        self.statement(vm);
+        self.statement(vm, loop_);
         let else_jump = self.emit_jump(Op::Jump);
         self.patch_jump(then_jump);
         self.emit_op(Op::Pop);
 
         if self.matches(TokenType::Else) {
-            self.statement(vm);
+            self.statement(vm, loop_);
         }
         self.patch_jump(else_jump);
     }
@@ -410,17 +451,22 @@ impl Parser {
         let exit_jump = self.emit_jump(Op::JumpIfFalse);
         self.emit_op(Op::Pop);
 
-        self.statement(vm);
+        let loop_ = Some(LoopInfo {
+            depth: self.locals.depth,
+            loop_start,
+            exit_jump,
+        });
+        self.statement(vm, loop_);
 
         self.emit_loop(loop_start);
         self.patch_jump(exit_jump);
         self.emit_op(Op::Pop);
     }
 
-    fn block(&mut self, vm: &mut Vm) {
+    fn block(&mut self, vm: &mut Vm, loop_: Option<LoopInfo>) {
         while !self.check(TokenType::RightBrace) && !self.check(TokenType::Eof)
         {
-            self.declaration(vm);
+            self.declaration(vm, loop_);
         }
         self.consume(TokenType::RightBrace, "expect '}' after block");
     }
@@ -546,7 +592,9 @@ impl Parser {
 
     fn end_scope(&mut self) {
         let n = self.locals.end_scope() as u32;
-        self.emit_op_arg(Op::PopN, n);
+        if n > 0 {
+            self.emit_op_arg(Op::PopN, n);
+        }
     }
 
     fn scan_error(&mut self, err: Error) {
@@ -581,6 +629,7 @@ impl Parser {
             if self.previous.ty() == TokenType::Semicolon {
                 return;
             }
+            // Ignore continue/break -- will synchronize on the following ';'
             match self.current.ty() {
                 TokenType::Class
                 | TokenType::Fun
@@ -596,6 +645,13 @@ impl Parser {
             }
         }
     }
+}
+
+#[derive(Copy, Clone)]
+struct LoopInfo {
+    depth: i32,
+    loop_start: usize,
+    exit_jump: usize,
 }
 
 struct Locals {
@@ -643,7 +699,6 @@ impl Locals {
 
     fn mark_initialized(&mut self) {
         let idx = self.locals.len() - 1;
-
         self.locals[idx].depth = self.depth;
     }
 
@@ -659,6 +714,16 @@ impl Locals {
         {
             count += 1;
             self.locals.pop();
+        }
+        count
+    }
+
+    fn count_to_depth(&self, depth: i32) -> usize {
+        let mut count = 0usize;
+        while (count + 1) <= self.locals.len()
+            && self.locals[self.locals.len() - (count + 1)].depth > depth
+        {
+            count += 1;
         }
         count
     }

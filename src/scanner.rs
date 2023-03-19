@@ -28,7 +28,9 @@ pub enum TokenType {
     String,
     Number,
     And,
+    Break,
     Class,
+    Continue,
     Else,
     False,
     For,
@@ -309,7 +311,17 @@ impl Scanner {
     fn alpha(&mut self, c: u8) -> Token {
         match c {
             b'a' => self.check_keyword(false, b"nd", TokenType::And),
-            b'c' => self.check_keyword(false, b"lass", TokenType::Class),
+            b'b' => self.check_keyword(false, b"reak", TokenType::Break),
+            b'c' => match self.source.peek() {
+                Some(b'l') => {
+                    self.check_keyword(true, b"ass", TokenType::Class)
+                }
+                Some(b'o') => {
+                    self.check_keyword(true, b"ntinue", TokenType::Continue)
+                }
+                Some(_) => self.get_ident(),
+                None => self.make_token(TokenType::Identifier),
+            },
             b'e' => self.check_keyword(false, b"lse", TokenType::Else),
             b'i' => self.check_keyword(false, b"f", TokenType::If),
             b'n' => self.check_keyword(false, b"il", TokenType::Nil),

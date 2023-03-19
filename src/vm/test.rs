@@ -76,7 +76,9 @@ fn precedence() {
 mod assignment;
 mod block;
 mod bool;
+mod break_;
 mod comments;
+mod continue_;
 mod for_;
 mod logical_operator;
 mod numbers;
