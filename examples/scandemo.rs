@@ -1,6 +1,8 @@
-use std::env;
+use std::cell::RefCell;
 use std::io::{stdin, stdout, BufRead, Write};
 use std::process::exit;
+use std::rc::Rc;
+use std::{env, io};
 
 use rlox::{Parser, Result};
 
@@ -28,7 +30,10 @@ fn main() -> Result<()> {
             continue;
         } else {
             source.push(line);
-            let mut parser = Parser::new(source.join("\n"));
+            let mut parser = Parser::new(
+                source.join("\n"),
+                Rc::new(RefCell::new(io::stderr())),
+            );
             parser.show_tokens();
             source.clear();
         }

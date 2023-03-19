@@ -1,4 +1,7 @@
+use std::cell::RefCell;
+use std::io;
 use std::process::exit;
+use std::rc::Rc;
 
 use rlox::{Parser, Result};
 
@@ -9,8 +12,8 @@ fn main() -> Result<()> {
         exit(1);
     }
     let source = std::fs::read_to_string(&args[1])?;
-    let mut compiler = Parser::new(source);
+    let mut parser = Parser::new(source, Rc::new(RefCell::new(io::stderr())));
     #[cfg(feature = "bench_mode")]
-    compiler.bench()?;
+    parser.bench()?;
     Ok(())
 }

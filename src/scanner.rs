@@ -254,7 +254,10 @@ impl Scanner {
                 && self.source.peek_peek() == Some(b'/')
             {
                 self.source.skip_while(|c| c != b'\n');
-                self.source.next();
+                // if let Some(b'\n') = self.source.peek() {
+                //     self.line += 1;
+                // }
+                // self.source.next();
                 continue;
             }
             break;
@@ -277,6 +280,7 @@ impl Scanner {
     }
 
     fn string(&mut self) -> Result<Token> {
+        let line = self.line;
         self.source.skip_while(|c| {
             (c == b'\n') && {
                 self.line += 1;
@@ -284,6 +288,7 @@ impl Scanner {
             } || c != b'"'
         });
         if self.source.peek().is_none() {
+            self.line = line;
             bail!("unterminated string");
         }
         self.source.next();

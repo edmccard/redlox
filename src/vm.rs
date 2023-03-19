@@ -6,7 +6,7 @@ use std::rc::{Rc, Weak};
 
 use crate::code::{Chunk, Op};
 use crate::parser::Parser;
-use crate::Value;
+use crate::{Stderr, Stdout, Value};
 
 pub(crate) type Obj = Rc<RefCell<Object>>;
 type Result<T> = std::result::Result<T, RuntimeError>;
@@ -30,13 +30,15 @@ enum Payload {
 impl fmt::Display for Payload {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Payload::String(v) => write!(f, "\"{}\"", v),
+            Payload::String(v) => write!(f, "{}", v),
         }
     }
 }
 
 // TODO: faster global access
 pub struct Vm {
+    stdout: Stdout,
+    stderr: Stderr,
     stack: Vec<Value>,
     heap: Vec<Weak<RefCell<Object>>>,
     symbols: SymTable,
@@ -46,8 +48,10 @@ pub struct Vm {
 impl Vm {
     const MAX_STACK: usize = 65536;
 
-    pub fn init() -> Self {
+    pub fn new(stdout: Stdout, stderr: Stderr) -> Self {
         Vm {
+            stdout,
+            stderr,
             stack: Vec::new(),
             heap: Vec::new(),
             symbols: SymTable::new(),
@@ -60,7 +64,7 @@ impl Vm {
     }
 
     pub fn interpret(&mut self, source: String) -> Result<()> {
-        let mut parser = Parser::new(source);
+        let mut parser = Parser::new(source, self.stderr.clone());
         match parser.parse(self) {
             Some(chunk) => self.run(&chunk),
             None => Ok(()),
@@ -85,7 +89,8 @@ impl Vm {
                     Ok(())
                 }
                 Op::Print => {
-                    println!("{}", self.pop());
+                    let val = self.pop();
+                    let _ = writeln!(self.stdout.borrow_mut(), "{}", val);
                     Ok(())
                 }
                 Op::Return => {
@@ -145,6 +150,11 @@ impl Vm {
                     let constant = chunk.get_constant(inst.operand());
                     self.push(constant)
                 }
+                Op::PopN => {
+                    let new_len = self.stack.len() - inst.operand() as usize;
+                    self.stack.truncate(new_len);
+                    Ok(())
+                }
                 Op::DefineGlobal => {
                     let global = self.pop();
                     self.globals.insert(inst.operand(), global);
@@ -177,6 +187,20 @@ impl Vm {
                 Op::SetLocal => {
                     let val = self.peek(0);
                     self.stack[inst.operand() as usize] = val.clone();
+                    Ok(())
+                }
+                Op::JumpIfFalse => {
+                    if !bool::from(self.peek(0)) {
+                        ip.offset += inst.operand() as usize;
+                    }
+                    Ok(())
+                }
+                Op::Jump => {
+                    ip.offset += inst.operand() as usize;
+                    Ok(())
+                }
+                Op::Loop => {
+                    ip.offset -= inst.operand() as usize;
                     Ok(())
                 }
                 _ => Vm::error("unknown opcode"),
@@ -316,3 +340,6 @@ impl RuntimeError {
         }
     }
 }
+
+#[cfg(test)]
+mod test;

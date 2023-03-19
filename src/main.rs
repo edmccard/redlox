@@ -1,11 +1,15 @@
-use std::env;
+use std::cell::RefCell;
 use std::io::{stdin, stdout, BufRead, Write};
 use std::process::exit;
+use std::rc::Rc;
+use std::{env, io};
 
 use rlox::{Result, Vm};
 
 fn main() -> Result<()> {
-    let mut vm = Vm::init();
+    let stdout = Rc::new(RefCell::new(io::stdout()));
+    let stderr = Rc::new(RefCell::new(io::stderr()));
+    let mut vm = Vm::new(stdout, stderr);
     let args: Vec<String> = env::args().collect();
     match args.len() {
         1 => repl(&mut vm)?,
@@ -40,7 +44,7 @@ fn repl(vm: &mut Vm) -> Result<()> {
         } else {
             source.push(line);
             if let Err(e) = vm.interpret(source.join("\n")) {
-                println!("{}", e)
+                eprintln!("{}", e)
             }
             source.clear();
         }

@@ -19,6 +19,9 @@ type Bytecode = u16;
 )]
 #[repr(u8)]
 pub enum Op {
+    #[num_enum(default)]
+    Unknown,
+    // Zero-argument opcodes
     Nil,
     True,
     False,
@@ -34,15 +37,18 @@ pub enum Op {
     Subtract,
     Multiply,
     Divide,
+    // One-argument opcodes
     Constant,
+    PopN,
     DefineGlobal,
     GetGlobal,
     SetGlobal,
     GetLocal,
     SetLocal,
+    JumpIfFalse,
+    Jump,
+    Loop,
     Extend,
-    #[num_enum(default)]
-    Unknown,
 }
 
 impl fmt::Display for Op {
@@ -130,6 +136,10 @@ impl Chunk {
         inst
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.code.len()
+    }
+
     pub(crate) fn new_line(&mut self, line: u32) {
         self.line_map.new_line(line);
     }
@@ -155,6 +165,25 @@ impl Chunk {
             }
         }
         self.push_op(op, arg as u8);
+    }
+
+    pub(crate) fn write_jump(&mut self, op: Op) -> usize {
+        let offset = self.code.len();
+        self.write_op_arg(op, 0xfff);
+        offset
+    }
+
+    pub(crate) fn patch_jump(&mut self, offset: usize, delta: u16) {
+        let code = u16::from_be_bytes([
+            (self.code[offset] >> 8) as u8,
+            (delta >> 8) as u8,
+        ]);
+        self.code[offset] = code;
+        let code = u16::from_be_bytes([
+            (self.code[offset + 1] >> 8) as u8,
+            (delta & 0xff) as u8,
+        ]);
+        self.code[offset + 1] = code;
     }
 
     pub(crate) fn add_constant(&mut self, value: Value) -> Result<u32> {
@@ -249,12 +278,27 @@ impl Chunk {
             op if op < Op::Constant => {
                 println!("{}", op);
             }
-            Op::Unknown => println!("Unknown opcode {}", inst.opcode as u8),
             Op::Constant => {
+                // Show the value of the constant
                 self.disassemble_const(inst.operand);
             }
             Op::DefineGlobal | Op::GetGlobal | Op::SetGlobal => {
+                // Show the name of the symbol
                 self.disassemble_sym(inst.opcode, inst.operand, sym_names);
+            }
+            Op::JumpIfFalse | Op::Jump => {
+                // Convert the offset argument to an address
+                Chunk::disassemble_op_arg(
+                    inst.opcode,
+                    (offset + 2 + inst.operand as usize) as u32,
+                );
+            }
+            Op::Loop => {
+                // Convert the offset argument to an address
+                Chunk::disassemble_op_arg(
+                    Op::Loop,
+                    (offset + inst.len - inst.operand as usize) as u32,
+                );
             }
             _ => {
                 Chunk::disassemble_op_arg(inst.opcode, inst.operand);

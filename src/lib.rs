@@ -1,4 +1,4 @@
-use std::{fmt, rc::Rc};
+use std::{cell::RefCell, fmt, io::Write, rc::Rc};
 
 pub use anyhow::Result;
 pub use parser::Parser;
@@ -9,6 +9,9 @@ mod code;
 mod parser;
 mod scanner;
 mod vm;
+
+pub type Stdout = Rc<RefCell<dyn Write>>;
+pub type Stderr = Rc<RefCell<dyn Write>>;
 
 #[derive(Clone, Default, PartialEq, PartialOrd)]
 pub(crate) enum Value {
