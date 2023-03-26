@@ -1,22 +1,25 @@
 use std::{
     cell::RefCell,
     collections::{hash_map::Entry, HashMap},
-    fmt,
-    rc::{Rc, Weak},
+    fmt::Display,
+    ops::Deref,
+    rc::Rc,
 };
 
 use crate::{
     code::{Chunk, Op},
     parser::Parser,
-    Stderr, Stdout, Value,
+    Obj, Stderr, Stdout, Value,
 };
 
 #[cfg(test)]
 mod test;
 
-#[derive(PartialEq)]
-pub(crate) struct Object {
-    payload: Payload,
+pub(crate) struct LoxFunction {}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct LoxString {
+    text: Box<str>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -36,19 +39,21 @@ pub struct Vm {
     stack: Vec<Value>,
     globals: HashMap<u32, Value>,
     symbols: SymTable,
-    heap: Vec<Weak<RefCell<Object>>>,
 }
 
-enum Payload {
-    String(Box<str>),
-}
-
-pub(crate) type Obj = Rc<RefCell<Object>>;
 type Result<T> = std::result::Result<T, RuntimeError>;
 
-impl fmt::Display for Object {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.payload.fmt(f)
+impl Deref for LoxString {
+    type Target = Box<str>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.text
+    }
+}
+
+impl Display for LoxString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.text.fmt(f)
     }
 }
 
@@ -98,22 +103,6 @@ impl Vm {
             stack: Vec::new(),
             globals: HashMap::new(),
             symbols: SymTable::new(),
-            heap: Vec::new(),
-        }
-    }
-
-    fn add_objects(&mut self, a: Obj, b: Obj) -> Result<()> {
-        match (&a.borrow().payload, &b.borrow().payload) {
-            (Payload::String(a), Payload::String(b)) => {
-                let value = self.new_string(&[a.as_ref(), b.as_ref()].concat());
-                self.poke(0, value)
-            }
-            _ => {
-                self.pop();
-                Err(RuntimeError::new(
-                    "operands must be numbers or strings".to_string(),
-                ))
-            }
         }
     }
 
@@ -149,17 +138,12 @@ impl Vm {
         }
     }
 
-    fn new_object(&mut self, object: Object) -> Value {
-        let obj = Rc::new(RefCell::new(object));
-        self.heap.push(Rc::downgrade(&obj));
-        Value::Object(obj)
-    }
-
     pub(crate) fn new_string(&mut self, text: &str) -> Value {
-        let object = Object {
-            payload: Payload::String(Box::from(text)),
+        let string = LoxString {
+            text: Box::from(text),
         };
-        self.new_object(object)
+        let obj = Rc::new(RefCell::new(string));
+        Value::String(Obj(obj))
     }
 
     fn peek(&self, count: usize) -> Value {
@@ -244,8 +228,12 @@ impl Vm {
                         (Value::Number(a), Value::Number(b)) => {
                             self.poke(0, Value::Number(a + b))
                         }
-                        (Value::Object(a), Value::Object(b)) => {
-                            self.add_objects(a, b)
+                        (Value::String(a), Value::String(b)) => {
+                            let value = self.new_string(
+                                &[a.borrow().as_ref(), b.borrow().as_ref()]
+                                    .concat(),
+                            );
+                            self.poke(0, value)
                         }
                         _ => {
                             self.pop();
@@ -342,21 +330,5 @@ impl Vm {
             print!("[ {} ]", elem);
         }
         println!();
-    }
-}
-
-impl PartialEq for Payload {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Payload::String(s1), Payload::String(s2)) => s1 == s2,
-        }
-    }
-}
-
-impl fmt::Display for Payload {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Payload::String(v) => write!(f, "{}", v),
-        }
     }
 }

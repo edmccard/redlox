@@ -129,10 +129,10 @@ fn syntax() {
     // expect: 2
     
     // No clauses.
-    //fun foo() {
-    //  for (;;) return "done";
-    //}
-    //print foo(); // expect: done
+    fun foo() {
+      for (;;) return "done";
+    }
+    print foo(); // expect: done
     
     // No variable.
     var i = 0;
@@ -141,13 +141,13 @@ fn syntax() {
     // expect: 1
     
     // No condition.
-    //fun bar() {
-    //  for (var i = 0;; i = i + 1) {
-    //    print i;
-    //    if (i >= 2) return;
-    //  }
-    //}
-    //bar();
+    fun bar() {
+      for (var i = 0;; i = i + 1) {
+        print i;
+        if (i >= 2) return;
+      }
+    }
+    bar();
     // expect: 0
     // expect: 1
     // expect: 2
@@ -166,7 +166,10 @@ fn syntax() {
     for (; false;) for (;;) 1;    
     "#;
 
-    let expected = ["1", "2", "3", "0", "1", "2", "0", "1", "0", "1", ""];
+    let expected = [
+        "1", "2", "3", "0", "1", "2", "done", "0", "1", "0", "1", "2", "0",
+        "1", "",
+    ];
 
     let (stdout, stderr) = interpret(source);
     assert_eq!(stdout, expected.join("\n"));
