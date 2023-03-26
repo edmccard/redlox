@@ -1,10 +1,12 @@
-use std::cell::RefCell;
-use std::io::{stdin, stdout, BufRead, Write};
-use std::process::exit;
-use std::rc::Rc;
-use std::{env, io};
+use std::{
+    env,
+    io::{stdin, stdout, BufRead, Write},
+    process::exit,
+};
 
-use rlox::{Parser, Result};
+use anyhow::Result;
+
+use redlox::print_tokens;
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -30,11 +32,7 @@ fn main() -> Result<()> {
             continue;
         } else {
             source.push(line);
-            let mut parser = Parser::new(
-                source.join("\n"),
-                Rc::new(RefCell::new(io::stderr())),
-            );
-            parser.show_tokens();
+            print_tokens(source.join("\n"));
             source.clear();
         }
     }

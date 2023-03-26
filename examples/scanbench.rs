@@ -1,9 +1,8 @@
-use std::cell::RefCell;
-use std::io;
 use std::process::exit;
-use std::rc::Rc;
 
-use rlox::{Parser, Result};
+use anyhow::Result;
+
+use redlox::bench_scanner;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -11,9 +10,8 @@ fn main() -> Result<()> {
         eprintln!("Usage: scanbench [path]");
         exit(1);
     }
-    let source = std::fs::read_to_string(&args[1])?;
-    let mut parser = Parser::new(source, Rc::new(RefCell::new(io::stderr())));
-    #[cfg(feature = "bench_mode")]
-    parser.bench()?;
+    let text = std::fs::read_to_string(&args[1])?;
+    bench_scanner(text)?;
+
     Ok(())
 }

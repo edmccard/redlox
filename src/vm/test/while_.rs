@@ -1,6 +1,31 @@
 use super::interpret;
 
 #[test]
+fn class_in_body() {
+    panic!();
+}
+
+#[test]
+fn closure_in_body() {
+    panic!();
+}
+
+#[test]
+fn fun_in_body() {
+    panic!();
+}
+
+#[test]
+fn return_closure() {
+    panic!();
+}
+
+#[test]
+fn return_inside() {
+    panic!();
+}
+
+#[test]
 fn syntax() {
     let source = r#"
     // Single-expression body.

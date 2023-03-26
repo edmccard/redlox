@@ -4,7 +4,9 @@ use std::process::exit;
 use std::rc::Rc;
 use std::{env, io};
 
-use rlox::{Result, Vm};
+use anyhow::Result;
+
+use redlox::Vm;
 
 fn main() -> Result<()> {
     let stdout = Rc::new(RefCell::new(io::stdout()));

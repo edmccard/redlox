@@ -1,5 +1,6 @@
+use anyhow::Result;
+
 use super::{Scanner, TokenType};
-use crate::Result;
 
 #[test]
 fn identifiers() -> Result<()> {

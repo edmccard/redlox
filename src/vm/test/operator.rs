@@ -142,6 +142,7 @@ fn divide_nonnum_num() {
     assert_eq!(stderr, "[line 2] operands must be numbers\n");
 }
 
+#[test]
 fn divide_num_nonnum() {
     let source = r#"
     1 / "1"; // expect runtime error: Operands must be numbers.

@@ -3,6 +3,22 @@ use std::{cell::RefCell, rc::Rc};
 
 use crate::Vm;
 
+mod assignment;
+mod block;
+mod bool;
+mod break_;
+mod comments;
+mod continue_;
+mod for_;
+mod logical_operator;
+mod nil;
+mod number;
+mod operator;
+mod print;
+mod string;
+mod variable;
+mod while_;
+
 fn interpret(source: &str) -> (String, String) {
     let stdout = Rc::new(RefCell::new(Vec::<u8>::new()));
     let stderr = Rc::new(RefCell::new(Vec::<u8>::new()));
@@ -72,18 +88,3 @@ fn precedence() {
     assert_eq!(stdout, expected.join("\n"));
     assert_eq!(stderr, "");
 }
-
-mod assignment;
-mod block;
-mod bool;
-mod break_;
-mod comments;
-mod continue_;
-mod for_;
-mod logical_operator;
-mod numbers;
-mod operator;
-mod print;
-mod string;
-mod variable;
-mod while_;

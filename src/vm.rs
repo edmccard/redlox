@@ -1,20 +1,50 @@
-use std::cell::RefCell;
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
-use std::fmt;
-use std::rc::{Rc, Weak};
+use std::{
+    cell::RefCell,
+    collections::{hash_map::Entry, HashMap},
+    fmt,
+    rc::{Rc, Weak},
+};
 
-use crate::code::{Chunk, Op};
-use crate::parser::Parser;
-use crate::{Stderr, Stdout, Value};
+use crate::{
+    code::{Chunk, Op},
+    parser::Parser,
+    Stderr, Stdout, Value,
+};
 
-pub(crate) type Obj = Rc<RefCell<Object>>;
-type Result<T> = std::result::Result<T, RuntimeError>;
+#[cfg(test)]
+mod test;
 
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq)]
 pub(crate) struct Object {
     payload: Payload,
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("{}", .msg)]
+pub struct RuntimeError {
+    msg: String,
+}
+
+struct SymTable {
+    symbols: HashMap<Rc<str>, u32>,
+    names: Vec<Rc<str>>,
+}
+
+pub struct Vm {
+    stdout: Stdout,
+    stderr: Stderr,
+    stack: Vec<Value>,
+    globals: HashMap<u32, Value>,
+    symbols: SymTable,
+    heap: Vec<Weak<RefCell<Object>>>,
+}
+
+enum Payload {
+    String(Box<str>),
+}
+
+pub(crate) type Obj = Rc<RefCell<Object>>;
+type Result<T> = std::result::Result<T, RuntimeError>;
 
 impl fmt::Display for Object {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -22,27 +52,40 @@ impl fmt::Display for Object {
     }
 }
 
-#[derive(PartialEq, PartialOrd)]
-enum Payload {
-    String(Box<str>),
-}
+impl RuntimeError {
+    fn new(msg: String) -> Self {
+        RuntimeError { msg }
+    }
 
-impl fmt::Display for Payload {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Payload::String(v) => write!(f, "{}", v),
+    fn with_line(&self, line: u32) -> Self {
+        RuntimeError {
+            msg: format!("[line {}] {}", line, self.msg),
         }
     }
 }
 
-// TODO: faster global access
-pub struct Vm {
-    stdout: Stdout,
-    stderr: Stderr,
-    stack: Vec<Value>,
-    heap: Vec<Weak<RefCell<Object>>>,
-    symbols: SymTable,
-    globals: HashMap<u32, Value>,
+impl SymTable {
+    fn new() -> Self {
+        SymTable {
+            symbols: HashMap::new(),
+            names: Vec::new(),
+        }
+    }
+
+    fn intern(&mut self, ident: &str) -> u32 {
+        if let Some(&sym) = self.symbols.get(ident) {
+            return sym;
+        }
+        let idx = self.names.len() as u32;
+        let name: Rc<str> = ident.into();
+        self.symbols.insert(name.clone(), idx);
+        self.names.push(name);
+        idx
+    }
+
+    fn lookup(&self, sym: u32) -> Rc<str> {
+        self.names[sym as usize].clone()
+    }
 }
 
 impl Vm {
@@ -53,14 +96,49 @@ impl Vm {
             stdout,
             stderr,
             stack: Vec::new(),
-            heap: Vec::new(),
-            symbols: SymTable::new(),
             globals: HashMap::new(),
+            symbols: SymTable::new(),
+            heap: Vec::new(),
+        }
+    }
+
+    fn add_objects(&mut self, a: Obj, b: Obj) -> Result<()> {
+        match (&a.borrow().payload, &b.borrow().payload) {
+            (Payload::String(a), Payload::String(b)) => {
+                let value = self.new_string(&[a.as_ref(), b.as_ref()].concat());
+                self.poke(0, value)
+            }
+            _ => {
+                self.pop();
+                Err(RuntimeError::new(
+                    "operands must be numbers or strings".to_string(),
+                ))
+            }
+        }
+    }
+
+    fn arithmetic_args(&mut self) -> Result<(f64, f64)> {
+        let b = self.pop();
+        let a = self.peek(0);
+        match (a, b) {
+            (Value::Number(a), Value::Number(b)) => Ok((a, b)),
+            _ => {
+                self.pop();
+                Err(RuntimeError::new("operands must be numbers".to_string()))
+            }
         }
     }
 
     fn error(msg: &str) -> Result<()> {
         Err(RuntimeError::new(msg.to_string()))
+    }
+
+    pub(crate) fn get_sym_names(&self) -> &Vec<Rc<str>> {
+        &self.symbols.names
+    }
+
+    pub(crate) fn get_symbol(&mut self, ident: &str) -> u32 {
+        self.symbols.intern(ident)
     }
 
     pub fn interpret(&mut self, source: String) -> Result<()> {
@@ -71,8 +149,46 @@ impl Vm {
         }
     }
 
+    fn new_object(&mut self, object: Object) -> Value {
+        let obj = Rc::new(RefCell::new(object));
+        self.heap.push(Rc::downgrade(&obj));
+        Value::Object(obj)
+    }
+
+    pub(crate) fn new_string(&mut self, text: &str) -> Value {
+        let object = Object {
+            payload: Payload::String(Box::from(text)),
+        };
+        self.new_object(object)
+    }
+
+    fn peek(&self, count: usize) -> Value {
+        let idx = self.stack.len() - (count + 1);
+        self.stack[idx].clone()
+    }
+
+    fn poke(&mut self, count: usize, val: Value) -> Result<()> {
+        let idx = self.stack.len() - (count + 1);
+        self.stack[idx] = val;
+        Ok(())
+    }
+
+    fn pop(&mut self) -> Value {
+        self.stack.pop().unwrap()
+    }
+
+    fn push(&mut self, val: Value) -> Result<()> {
+        if self.stack.len() < Vm::MAX_STACK {
+            self.stack.push(val);
+            Ok(())
+        } else {
+            Vm::error("stack overflow")
+        }
+    }
+
     fn run(&mut self, chunk: &Chunk) -> Result<()> {
-        let mut ip = chunk.instructions();
+        let mut ip = chunk.instructions(0);
+        let base = 0usize;
         while let Some(inst) = ip.next() {
             #[cfg(feature = "trace_execution")]
             {
@@ -181,12 +297,14 @@ impl Vm {
                     }
                 }
                 Op::GetLocal => {
-                    let local = self.stack[inst.operand() as usize].clone();
+                    let slot = inst.operand() as usize + base;
+                    let local = self.stack[slot].clone();
                     self.push(local)
                 }
                 Op::SetLocal => {
                     let val = self.peek(0);
-                    self.stack[inst.operand() as usize] = val.clone();
+                    let slot = inst.operand() as usize + base;
+                    self.stack[slot] = val.clone();
                     Ok(())
                 }
                 Op::JumpIfFalse => {
@@ -203,7 +321,8 @@ impl Vm {
                     ip.offset -= inst.operand() as usize;
                     Ok(())
                 }
-                _ => Vm::error("unknown opcode"),
+                Op::Nop => Ok(()),
+                _ => Vm::error(&format!("unknown opcode {}", inst.opcode())),
             };
             result.map_err(|e| {
                 let offset = ip.offset - inst.len();
@@ -216,74 +335,6 @@ impl Vm {
         Ok(())
     }
 
-    pub(crate) fn new_string(&mut self, text: &str) -> Value {
-        let object = Object {
-            payload: Payload::String(Box::from(text)),
-        };
-        let obj = Rc::new(RefCell::new(object));
-        self.heap.push(Rc::downgrade(&obj));
-        Value::Object(obj)
-    }
-
-    pub(crate) fn get_symbol(&mut self, ident: &str) -> u32 {
-        self.symbols.intern(ident)
-    }
-
-    pub(crate) fn get_sym_names(&self) -> &Vec<Rc<str>> {
-        &self.symbols.names
-    }
-
-    fn add_objects(&mut self, a: Obj, b: Obj) -> Result<()> {
-        match (&a.borrow().payload, &b.borrow().payload) {
-            (Payload::String(a), Payload::String(b)) => {
-                let value = self.new_string(&[a.as_ref(), b.as_ref()].concat());
-                self.poke(0, value)
-            }
-            _ => {
-                self.pop();
-                Err(RuntimeError::new(
-                    "operands must be numbers or strings".to_string(),
-                ))
-            }
-        }
-    }
-
-    fn push(&mut self, val: Value) -> Result<()> {
-        if self.stack.len() < Vm::MAX_STACK {
-            self.stack.push(val);
-            Ok(())
-        } else {
-            Vm::error("stack overflow")
-        }
-    }
-
-    fn pop(&mut self) -> Value {
-        self.stack.pop().unwrap()
-    }
-
-    fn peek(&self, count: usize) -> Value {
-        let idx = self.stack.len() - (count + 1);
-        self.stack[idx].clone()
-    }
-
-    fn poke(&mut self, count: usize, val: Value) -> Result<()> {
-        let idx = self.stack.len() - (count + 1);
-        self.stack[idx] = val;
-        Ok(())
-    }
-
-    fn arithmetic_args(&mut self) -> Result<(f64, f64)> {
-        let b = self.pop();
-        let a = self.peek(0);
-        match (a, b) {
-            (Value::Number(a), Value::Number(b)) => Ok((a, b)),
-            _ => {
-                self.pop();
-                Err(RuntimeError::new("operands must be numbers".to_string()))
-            }
-        }
-    }
-
     #[cfg(feature = "trace_execution")]
     fn trace_stack(&self) {
         print!("          ");
@@ -294,52 +345,18 @@ impl Vm {
     }
 }
 
-struct SymTable {
-    symbols: HashMap<Rc<str>, u32>,
-    names: Vec<Rc<str>>,
-}
-
-impl SymTable {
-    fn new() -> Self {
-        SymTable {
-            symbols: HashMap::new(),
-            names: Vec::new(),
-        }
-    }
-
-    fn intern(&mut self, ident: &str) -> u32 {
-        if let Some(&sym) = self.symbols.get(ident) {
-            return sym;
-        }
-        let idx = self.names.len() as u32;
-        let name: Rc<str> = ident.into();
-        self.symbols.insert(name.clone(), idx);
-        self.names.push(name);
-        idx
-    }
-
-    fn lookup(&self, sym: u32) -> Rc<str> {
-        self.names[sym as usize].clone()
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("{}", .msg)]
-pub struct RuntimeError {
-    msg: String,
-}
-
-impl RuntimeError {
-    fn new(msg: String) -> Self {
-        RuntimeError { msg }
-    }
-
-    fn with_line(&self, line: u32) -> Self {
-        RuntimeError {
-            msg: format!("[line {}] {}", line, self.msg),
+impl PartialEq for Payload {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Payload::String(s1), Payload::String(s2)) => s1 == s2,
         }
     }
 }
 
-#[cfg(test)]
-mod test;
+impl fmt::Display for Payload {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Payload::String(v) => write!(f, "{}", v),
+        }
+    }
+}
