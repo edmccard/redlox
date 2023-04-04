@@ -205,6 +205,7 @@ impl Scanner {
         self.make_token(TokenType::Number)
     }
 
+    #[inline]
     pub(super) fn scan_token(&mut self) -> Result<Token> {
         self.skip_whitespace();
         let c = match self.source.next() {
@@ -256,9 +257,22 @@ impl Scanner {
                 }
             }
             b'"' => self.string()?,
-            _ => bail!("unexpected character '{}'", c),
+            _ => {
+                let ch = self.skip_unexpected();
+                bail!("unexpected character '{}'", ch);
+            }
         };
         Ok(token)
+    }
+
+    fn skip_unexpected(&mut self) -> char {
+        let text = unsafe {
+            from_utf8_unchecked(&self.source.text[(self.source.current - 1)..])
+        };
+        let c = text.chars().next().unwrap();
+        self.source.current += c.len_utf8() - 1;
+        self.current = self.source.current;
+        c
     }
 
     fn skip_whitespace(&mut self) {

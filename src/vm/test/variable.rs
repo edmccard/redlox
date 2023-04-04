@@ -2,7 +2,15 @@ use super::interpret;
 
 #[test]
 fn collide_with_parameter() {
-    panic!();
+    let source = r#"
+    fun foo(a) {
+        var a; // Error at 'a': Already a variable with this name in this scope.
+      }
+    "#;
+
+    let (stdout, stderr) = interpret(source);
+    assert_eq!(stdout, "");
+    assert_eq!(stderr, "[line 3] Error at 'a': already a variable with this name in this scope\n");
 }
 
 #[test]
@@ -21,12 +29,36 @@ fn duplicate_local() {
 
 #[test]
 fn duplicate_parameter() {
-    panic!();
+    let source = r#"
+    fun foo(arg,
+            arg) { // Error at 'arg': Already a variable with this name in this scope.
+        "body";
+    }
+    "#;
+
+    let (stdout, stderr) = interpret(source);
+    assert_eq!(stdout, "");
+    assert_eq!(stderr, "[line 3] Error at 'arg': already a parameter with this name in this scope\n");
 }
 
 #[test]
 fn early_bound() {
-    panic!();
+    let source = r#"
+    var a = "outer";
+    {
+      fun foo() {
+        print a;
+      }
+    
+      foo(); // expect: outer
+      var a = "inner";
+      foo(); // expect: outer
+    }
+    "#;
+
+    let (stdout, stderr) = interpret(source);
+    assert_eq!(stdout, "outer\nouter\n");
+    assert_eq!(stderr, "");
 }
 
 #[test]

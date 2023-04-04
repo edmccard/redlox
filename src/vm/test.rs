@@ -10,6 +10,7 @@ mod break_;
 mod comments;
 mod continue_;
 mod for_;
+mod function;
 mod logical_operator;
 mod nil;
 mod number;

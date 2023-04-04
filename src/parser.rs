@@ -4,7 +4,7 @@ use anyhow::Error;
 
 use crate::{
     code::{Chunk, Op, Opcode},
-    vm::Vm,
+    vm::{LoxFunction, LoxString, Vm},
     Stderr, Value,
 };
 use scanner::{Scanner, Token, TokenType};
@@ -40,6 +40,7 @@ mod Prec {
             | TokenType::LessEqual => Comparison,
             TokenType::And => And,
             TokenType::Or => Or,
+            TokenType::LeftParen => Call,
             _ => None,
         }
     }
@@ -47,6 +48,12 @@ mod Prec {
     pub type Precedence = u32;
 }
 
+struct Compiler {
+    locals: Locals,
+    function: LoxFunction,
+}
+
+#[derive(Debug)]
 struct Local {
     sym: u32,
     depth: i32,
@@ -71,8 +78,7 @@ pub(crate) struct Parser {
     previous: Token,
     had_error: bool,
     panic_mode: bool,
-    locals: Locals,
-    chunks: Vec<Chunk>,
+    compilers: Vec<Compiler>,
 }
 
 pub fn print_tokens(source: String) {
@@ -97,11 +103,23 @@ pub fn print_tokens(source: String) {
     }
 }
 
+impl Compiler {
+    fn new(name: &str) -> Self {
+        Compiler {
+            locals: Locals::new(),
+            function: LoxFunction::new(name),
+        }
+    }
+}
+
 impl Locals {
     fn new() -> Self {
         Locals {
             depth: 0,
-            locals: Vec::new(),
+            locals: vec![Local {
+                depth: 0,
+                sym: u32::MAX,
+            }],
         }
     }
 
@@ -185,8 +203,7 @@ impl Parser {
             previous: Token::default(),
             had_error: false,
             panic_mode: false,
-            locals: Locals::new(),
-            chunks: Vec::new(),
+            compilers: Vec::new(),
         }
     }
 
@@ -214,8 +231,31 @@ impl Parser {
         self.patch_jump(end_jump);
     }
 
+    fn argument_list(&mut self, vm: &mut Vm) -> u32 {
+        let mut arg_count: u32 = 0;
+        if !(self.check(TokenType::RightParen)) {
+            loop {
+                self.expression(vm);
+                if arg_count == 255 {
+                    self.error("can't have more than 255 arguments");
+                }
+                arg_count += 1;
+                if !self.matches(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+        self.consume(TokenType::RightParen, "expect ')' after arguments");
+        arg_count & 0xff
+    }
+
+    fn arity(&mut self) -> &mut usize {
+        let idx = self.compilers.len() - 1;
+        &mut self.compilers[idx].function.arity
+    }
+
     fn begin_scope(&mut self) {
-        self.locals.begin_scope();
+        self.locals().begin_scope();
     }
 
     fn binary(&mut self, vm: &mut Vm) {
@@ -262,7 +302,7 @@ impl Parser {
         }
 
         let loop_ = loop_.unwrap();
-        let n = self.locals.count_to_depth(loop_.depth);
+        let n = self.locals().count_to_depth(loop_.depth);
         if n > 0 {
             self.emit_op_arg(Op::PopN, n as u32);
         }
@@ -270,13 +310,18 @@ impl Parser {
         self.emit_loop(loop_.exit_jump);
     }
 
+    fn call(&mut self, vm: &mut Vm) {
+        let arg_count = self.argument_list(vm);
+        self.emit_op_arg(Op::Call, arg_count);
+    }
+
     fn check(&self, ty: TokenType) -> bool {
         self.current.ty() == ty
     }
 
     fn chunk(&mut self) -> &mut Chunk {
-        let idx = self.chunks.len() - 1;
-        &mut self.chunks[idx]
+        let idx = self.compilers.len() - 1;
+        &mut self.compilers[idx].function.chunk
     }
 
     fn consume(&mut self, ty: TokenType, msg: &str) {
@@ -284,6 +329,17 @@ impl Parser {
             self.advance();
         } else {
             self.error_at(self.current, msg)
+        }
+    }
+
+    fn consume_or<F>(&mut self, ty: TokenType, msg: F)
+    where
+        F: Fn() -> String,
+    {
+        if self.current.ty() == ty {
+            self.advance();
+        } else {
+            self.error_at(self.current, &msg())
         }
     }
 
@@ -295,7 +351,7 @@ impl Parser {
         }
 
         let loop_ = loop_.unwrap();
-        let n = self.locals.count_to_depth(loop_.depth);
+        let n = self.locals().count_to_depth(loop_.depth);
         if n > 0 {
             self.emit_op_arg(Op::PopN, n as u32);
         }
@@ -303,7 +359,9 @@ impl Parser {
     }
 
     fn declaration(&mut self, vm: &mut Vm, loop_: Option<LoopInfo>) {
-        if self.matches(TokenType::Var) {
+        if self.matches(TokenType::Fun) {
+            self.fun_declaration(vm);
+        } else if self.matches(TokenType::Var) {
             self.var_declaration(vm);
         } else {
             self.statement(vm, loop_);
@@ -312,6 +370,19 @@ impl Parser {
         if self.panic_mode {
             self.synchronize();
         }
+    }
+
+    fn declare_variable(&mut self, vm: &mut Vm, syntax: &str) -> u32 {
+        self.consume_or(TokenType::Identifier, || {
+            format!("expect {} name", syntax)
+        });
+        let sym = vm.get_symbol(self.token_text());
+        if !self.locals().top_level() && !self.locals().add(sym) {
+            self.error_from(|| {
+                format!("already a {} with this name in this scope", syntax)
+            });
+        }
+        sym
     }
 
     fn emit_constant(&mut self, value: Value) {
@@ -350,7 +421,7 @@ impl Parser {
     }
 
     fn end_scope(&mut self) {
-        let n = self.locals.end_scope() as u32;
+        let n = self.locals().end_scope() as u32;
         if n == 1 {
             self.emit_op(Op::Pop);
         }
@@ -361,6 +432,13 @@ impl Parser {
 
     fn error(&mut self, msg: &str) {
         self.error_at(self.previous, msg);
+    }
+
+    fn error_from<F>(&mut self, msg: F)
+    where
+        F: Fn() -> String,
+    {
+        self.error_at(self.previous, &msg());
     }
 
     fn error_at(&mut self, token: Token, msg: &str) {
@@ -422,7 +500,7 @@ impl Parser {
         }
 
         let loop_ = Some(LoopInfo {
-            depth: self.locals.depth,
+            depth: self.locals().depth,
             loop_start,
             exit_jump,
         });
@@ -433,6 +511,49 @@ impl Parser {
         self.emit_op(Op::Pop);
 
         self.end_scope();
+    }
+
+    fn fun_declaration(&mut self, vm: &mut Vm) {
+        let sym = self.declare_variable(vm, "function");
+
+        if !self.locals().top_level() {
+            self.locals().mark_initialized();
+        }
+
+        match self.parse(vm, &vm.get_sym_name(sym)) {
+            None => self.emit_op(Op::Nil),
+            Some(func) => self.emit_constant(Value::Function(func.into())),
+        }
+
+        if self.locals().top_level() {
+            self.emit_op_arg(Op::DefineGlobal, sym);
+        }
+    }
+
+    fn function(&mut self, vm: &mut Vm) {
+        self.begin_scope();
+
+        self.consume(TokenType::LeftParen, "expect '(' after function name");
+        if !self.check(TokenType::RightParen) {
+            loop {
+                *self.arity() += 1;
+                if *self.arity() > 255 {
+                    self.error_at(
+                        self.current,
+                        "can't have more than 255 parameters",
+                    );
+                }
+                self.declare_variable(vm, "parameter");
+                self.locals().mark_initialized();
+                if !self.matches(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+        self.consume(TokenType::RightParen, "expect ')' after parameters");
+
+        self.consume(TokenType::LeftBrace, "expect '{' before function body");
+        self.block(vm, None);
     }
 
     fn grouping(&mut self, vm: &mut Vm) {
@@ -468,6 +589,11 @@ impl Parser {
         self.emit_op(op);
     }
 
+    fn locals(&mut self) -> &mut Locals {
+        let idx = self.compilers.len() - 1;
+        &mut self.compilers[idx].locals
+    }
+
     fn matches(&mut self, ty: TokenType) -> bool {
         if self.check(ty) {
             self.advance();
@@ -491,24 +617,32 @@ impl Parser {
         self.patch_jump(end_jump);
     }
 
-    pub(crate) fn parse(&mut self, vm: &mut Vm) -> Option<Chunk> {
-        self.chunks.push(Chunk::default());
+    pub(crate) fn parse(
+        &mut self,
+        vm: &mut Vm,
+        name: &str,
+    ) -> Option<LoxFunction> {
+        self.compilers.push(Compiler::new(name));
 
-        self.advance();
-
-        while !(self.matches(TokenType::Eof)) {
-            self.declaration(vm, None);
+        if name == "<script>" {
+            self.advance();
+            while !(self.matches(TokenType::Eof)) {
+                self.declaration(vm, None);
+            }
+        } else {
+            self.function(vm);
         }
 
+        self.emit_op(Op::Nil);
         self.emit_op(Op::Return);
 
         #[cfg(feature = "print_code")]
         if !self.had_error {
-            self.chunk().disassemble("<script>", vm.get_sym_names());
+            self.chunk().disassemble(name, vm.get_sym_names());
         }
 
-        let chunk = self.chunks.pop().unwrap();
-        (!self.had_error).then_some(chunk)
+        let mut compiler = self.compilers.pop().unwrap();
+        (!self.had_error).then_some(std::mem::take(&mut compiler.function))
     }
 
     fn parse_precedence(&mut self, precedence: Precedence, vm: &mut Vm) {
@@ -545,6 +679,7 @@ impl Parser {
                 | TokenType::LessEqual => self.binary(vm),
                 TokenType::And => self.and(vm),
                 TokenType::Or => self.or(vm),
+                TokenType::LeftParen => self.call(vm),
                 _ => unreachable!(),
             }
         }
@@ -579,6 +714,20 @@ impl Parser {
             writeln!(self.stderr.borrow_mut(), "[line {}] Error{}", line, msg);
     }
 
+    fn return_statement(&mut self, vm: &mut Vm) {
+        if self.compilers.len() == 1 {
+            self.error("can't return from top-level code");
+        }
+        if self.matches(TokenType::Semicolon) {
+            self.emit_op(Op::Nil);
+            self.emit_op(Op::Return);
+        } else {
+            self.expression(vm);
+            self.consume(TokenType::Semicolon, "expect ';' after return value");
+            self.emit_op(Op::Return);
+        }
+    }
+
     fn scan_error(&mut self, err: Error) {
         self.report_error(self.scanner.line(), format!(": {}", err));
     }
@@ -611,6 +760,8 @@ impl Parser {
             self.for_statement(vm);
         } else if self.matches(TokenType::If) {
             self.if_statement(vm, loop_);
+        } else if self.matches(TokenType::Return) {
+            self.return_statement(vm);
         } else if self.matches(TokenType::While) {
             self.while_statement(vm);
         } else if self.matches(TokenType::Break) {
@@ -630,7 +781,8 @@ impl Parser {
 
     fn string(&mut self, vm: &mut Vm) {
         let raw = self.token_text();
-        let value = vm.new_string(&raw[1..raw.len() - 1]);
+        let value =
+            Value::String(LoxString::new(&raw[1..raw.len() - 1]).into());
         self.emit_constant(value);
     }
 
@@ -650,7 +802,7 @@ impl Parser {
         self.begin_scope();
 
         self.consume(TokenType::LeftParen, "expect '(' after 'switch'");
-        let test_slot = self.locals.inject();
+        let test_slot = self.locals().inject();
         self.expression(vm);
         self.consume(
             TokenType::RightParen,
@@ -742,13 +894,7 @@ impl Parser {
     }
 
     fn var_declaration(&mut self, vm: &mut Vm) {
-        self.consume(TokenType::Identifier, "expect variable name");
-
-        let sym = vm.get_symbol(self.token_text());
-
-        if !self.locals.top_level() && !self.locals.add(sym) {
-            self.error("already a variable with this name in this scope");
-        }
+        let sym = self.declare_variable(vm, "variable");
 
         if self.matches(TokenType::Equal) {
             self.expression(vm);
@@ -760,16 +906,16 @@ impl Parser {
             "expect ';' after variable declaration",
         );
 
-        if self.locals.top_level() {
+        if self.locals().top_level() {
             self.emit_op_arg(Op::DefineGlobal, sym);
         } else {
-            self.locals.mark_initialized();
+            self.locals().mark_initialized();
         }
     }
 
     fn variable(&mut self, vm: &mut Vm, can_assign: bool) {
         let sym = vm.get_symbol(self.token_text());
-        let (op_set, op_get, arg) = match self.locals.resolve(sym) {
+        let (op_set, op_get, arg) = match self.locals().resolve(sym) {
             None => (Op::SetGlobal, Op::GetGlobal, sym),
             Some((slot, is_initialized)) => {
                 if !is_initialized {
@@ -799,7 +945,7 @@ impl Parser {
         self.emit_op(Op::Pop);
 
         let loop_ = Some(LoopInfo {
-            depth: self.locals.depth,
+            depth: self.locals().depth,
             loop_start,
             exit_jump,
         });

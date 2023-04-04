@@ -12,7 +12,14 @@ fn closure_in_body() {
 
 #[test]
 fn fun_in_body() {
-    panic!();
+    let source = r#"
+    // [line 2] Error at 'fun': Expect expression.
+    for (;;) fun foo() {}
+    "#;
+
+    let (stdout, stderr) = interpret(source);
+    assert_eq!(stdout, "");
+    assert_eq!(stderr, "[line 3] Error at 'fun': expect expression\n");
 }
 
 #[test]
@@ -22,7 +29,21 @@ fn return_closure() {
 
 #[test]
 fn return_inside() {
-    panic!();
+    let source = r#"
+    fun f() {
+      for (;;) {
+        var i = "i";
+        return i;
+      }
+    }
+    
+    print f();
+    // expect: i
+    "#;
+
+    let (stdout, stderr) = interpret(source);
+    assert_eq!(stdout, "i\n");
+    assert_eq!(stderr, "");
 }
 
 #[test]

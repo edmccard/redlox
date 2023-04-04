@@ -16,3 +16,8 @@ bench = false
 [dependencies]
 anyhow = "1.0.70"
 thiserror = "1.0.40"
+
+[features]
+trace_execution = []
+trace_stack = []
+print_code = []

@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     collections::{hash_map::Entry, HashMap},
     fmt::Display,
     ops::Deref,
@@ -7,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    code::{Chunk, Op},
+    code::{Chunk, InstIter, Op},
     parser::Parser,
     Obj, Stderr, Stdout, Value,
 };
@@ -15,9 +14,20 @@ use crate::{
 #[cfg(test)]
 mod test;
 
-pub(crate) struct LoxFunction {}
+struct Frame {
+    func: Obj<LoxFunction>,
+    offset: usize,
+    base: usize,
+}
 
-#[derive(Clone, PartialEq)]
+#[derive(Default)]
+pub(crate) struct LoxFunction {
+    name: String,
+    pub(crate) arity: usize,
+    pub(crate) chunk: Chunk,
+}
+
+#[derive(PartialEq)]
 pub(crate) struct LoxString {
     text: Box<str>,
 }
@@ -36,12 +46,37 @@ struct SymTable {
 pub struct Vm {
     stdout: Stdout,
     stderr: Stderr,
+    frames: Vec<Frame>,
     stack: Vec<Value>,
     globals: HashMap<u32, Value>,
     symbols: SymTable,
 }
 
 type Result<T> = std::result::Result<T, RuntimeError>;
+
+impl LoxFunction {
+    pub(crate) fn new(name: &str) -> Self {
+        LoxFunction {
+            name: name.to_string(),
+            arity: 0,
+            chunk: Chunk::default(),
+        }
+    }
+}
+
+impl Display for LoxFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+impl LoxString {
+    pub(crate) fn new(text: &str) -> Self {
+        LoxString {
+            text: Box::from(text),
+        }
+    }
+}
 
 impl Deref for LoxString {
     type Target = Box<str>;
@@ -100,6 +135,7 @@ impl Vm {
         Vm {
             stdout,
             stderr,
+            frames: Vec::new(),
             stack: Vec::new(),
             globals: HashMap::new(),
             symbols: SymTable::new(),
@@ -122,6 +158,10 @@ impl Vm {
         Err(RuntimeError::new(msg.to_string()))
     }
 
+    pub(crate) fn get_sym_name(&self, sym: u32) -> Rc<str> {
+        self.symbols.lookup(sym)
+    }
+
     pub(crate) fn get_sym_names(&self) -> &Vec<Rc<str>> {
         &self.symbols.names
     }
@@ -132,18 +172,10 @@ impl Vm {
 
     pub fn interpret(&mut self, source: String) -> Result<()> {
         let mut parser = Parser::new(source, self.stderr.clone());
-        match parser.parse(self) {
-            Some(chunk) => self.run(&chunk),
+        match parser.parse(self, "<script>") {
+            Some(func) => self.run(func),
             None => Ok(()),
         }
-    }
-
-    pub(crate) fn new_string(&mut self, text: &str) -> Value {
-        let string = LoxString {
-            text: Box::from(text),
-        };
-        let obj = Rc::new(RefCell::new(string));
-        Value::String(Obj(obj))
     }
 
     fn peek(&self, count: usize) -> Value {
@@ -170,14 +202,52 @@ impl Vm {
         }
     }
 
-    fn run(&mut self, chunk: &Chunk) -> Result<()> {
-        let mut ip = chunk.instructions(0);
-        let base = 0usize;
+    fn run(&mut self, script: LoxFunction) -> Result<()> {
+        self.frames.push(Frame {
+            func: script.into(),
+            base: 0,
+            offset: 0,
+        });
+        self.push(Value::Nil).unwrap();
+        let mut current = 0;
+        loop {
+            match self.run_frame(current) {
+                Ok(None) => {
+                    let frame = self.frames.pop().unwrap();
+                    let result = self.pop();
+                    self.stack.truncate(frame.base);
+                    if current == 0 {
+                        break;
+                    }
+                    self.push(result).unwrap();
+                    current -= 1;
+                }
+                Ok(Some(frame)) => {
+                    self.frames.push(frame);
+                    current += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    fn run_frame(&mut self, current: usize) -> Result<Option<Frame>> {
+        let func = self.frames[current].func.clone();
+        let chunk = &func.borrow().chunk;
+        let offset = self.frames[current].offset;
+        let mut ip = chunk.instructions(offset);
+        let base = self.frames[current].base;
+
         while let Some(inst) = ip.next() {
             #[cfg(feature = "trace_execution")]
             {
                 self.trace_stack();
-                chunk.disassemble_instruction(inst, ip.offset - inst.len());
+                chunk.disassemble_instruction(
+                    inst,
+                    ip.offset - inst.len(),
+                    self.get_sym_names(),
+                );
             }
 
             let result = match inst.opcode() {
@@ -229,9 +299,12 @@ impl Vm {
                             self.poke(0, Value::Number(a + b))
                         }
                         (Value::String(a), Value::String(b)) => {
-                            let value = self.new_string(
-                                &[a.borrow().as_ref(), b.borrow().as_ref()]
-                                    .concat(),
+                            let value = Value::String(
+                                LoxString::new(
+                                    &[a.borrow().as_ref(), b.borrow().as_ref()]
+                                        .concat(),
+                                )
+                                .into(),
                             );
                             self.poke(0, value)
                         }
@@ -253,6 +326,30 @@ impl Vm {
                 Op::Constant => {
                     let constant = chunk.get_constant(inst.operand());
                     self.push(constant)
+                }
+                Op::Call => {
+                    let arg_count = inst.operand();
+                    match self.peek(arg_count as usize) {
+                        Value::Function(f) => {
+                            let arity = f.borrow().arity as u32;
+                            if arity != arg_count {
+                                Vm::error(&format!(
+                                    "expected {} arguments but got {}",
+                                    arity, arg_count
+                                ))
+                            } else {
+                                self.frames[current].offset = ip.offset;
+                                return Ok(Some(Frame {
+                                    func: f,
+                                    base: self.stack.len()
+                                        - arg_count as usize
+                                        - 1,
+                                    offset: 0,
+                                }));
+                            }
+                        }
+                        _ => Vm::error("can only call functions or classes"),
+                    }
                 }
                 Op::PopN => {
                     let new_len = self.stack.len() - inst.operand() as usize;
@@ -320,7 +417,7 @@ impl Vm {
             })?;
         }
 
-        Ok(())
+        Ok(None)
     }
 
     #[cfg(feature = "trace_execution")]

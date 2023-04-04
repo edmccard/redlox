@@ -7,6 +7,40 @@ use crate::Value;
 #[allow(non_upper_case_globals)]
 #[allow(non_snake_case)]
 pub(crate) mod Op {
+    pub(super) fn name(op: u8) -> &'static str {
+        match op {
+            Nil => "NIL",
+            True => "TRUE",
+            False => "FALSE",
+            Pop => "POP",
+            Print => "PRINT",
+            Return => "RETURN",
+            Not => "NOT",
+            Negate => "NEGATE",
+            Equal => "EQUAL",
+            Greater => "GREATER",
+            Less => "LESS",
+            Add => "ADD",
+            Subtract => "SUBTRACT",
+            Multiply => "MULTIPLY",
+            Divide => "DIVIDE",
+            Nop => "NOP",
+            Constant => "CONSTANT",
+            PopN => "POPN",
+            DefineGlobal => "DEFINEGLOBAL",
+            GetGlobal => "GETGLOBAL",
+            SetGlobal => "SETGLOBAL",
+            GetLocal => "GETLOCAL",
+            SetLocal => "SETLOCAL",
+            JumpIfFalse => "JUMPIFFALSE",
+            Jump => "JUMP",
+            Loop => "LOOP",
+            Extend => "EXTEND",
+            Call => "CALL",
+            _ => "(unknown)",
+        }
+    }
+
     // Zero-argument opcodes
     pub const Nil: u8 = 0;
     pub const True: u8 = 1;
@@ -36,6 +70,7 @@ pub(crate) mod Op {
     pub const Jump: u8 = 136;
     pub const Loop: u8 = 137;
     pub const Extend: u8 = 138;
+    pub const Call: u8 = 139;
 }
 
 pub(crate) struct Chunk {
@@ -84,7 +119,7 @@ impl Chunk {
         Ok(idx as u32)
     }
 
-    fn disassemble<T: Display>(&self, name: &str, sym_names: &[T]) {
+    pub(crate) fn disassemble<T: Display>(&self, name: &str, sym_names: &[T]) {
         println!("== {name} ==");
         let mut offset = 0;
         for inst in self.instructions(offset) {
@@ -103,7 +138,7 @@ impl Chunk {
         }
     }
 
-    fn disassemble_instruction<T: Display>(
+    pub(crate) fn disassemble_instruction<T: Display>(
         &self,
         inst: Instruction,
         offset: usize,
@@ -112,7 +147,7 @@ impl Chunk {
         print!("{:04} ", offset);
         match inst.opcode {
             op if op < Op::Constant => {
-                println!("{}", op);
+                println!("{}", Op::name(op));
             }
             Op::Constant => {
                 // Show the value of the constant
@@ -144,7 +179,7 @@ impl Chunk {
     }
 
     fn disassemble_op_arg(op: Opcode, arg: u32) {
-        print!("{:10} {:08} ", format!("{}", op), arg);
+        print!("{:10} {:08} ", Op::name(op), arg);
     }
 
     fn disassemble_sym<T: Display>(
