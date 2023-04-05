@@ -6,10 +6,12 @@ use std::{
 };
 
 use crate::{
-    code::{Chunk, InstIter, Op},
+    code::{Chunk, Op},
     parser::Parser,
     Obj, Stderr, Stdout, Value,
 };
+
+mod native;
 
 #[cfg(test)]
 mod test;
@@ -38,6 +40,13 @@ pub struct RuntimeError {
     msg: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct RustFunction {
+    name: String,
+    arity: usize,
+    func: NativeFn,
+}
+
 struct SymTable {
     symbols: HashMap<Rc<str>, u32>,
     names: Vec<Rc<str>>,
@@ -53,6 +62,7 @@ pub struct Vm {
 }
 
 type Result<T> = std::result::Result<T, RuntimeError>;
+type NativeFn = fn(usize, vm: &mut Vm) -> Result<Value>;
 
 impl LoxFunction {
     pub(crate) fn new(name: &str) -> Self {
@@ -104,6 +114,18 @@ impl RuntimeError {
     }
 }
 
+impl Display for RustFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.name)
+    }
+}
+
+impl PartialEq for RustFunction {
+    fn eq(&self, other: &Self) -> bool {
+        self.func as usize == other.func as usize
+    }
+}
+
 impl SymTable {
     fn new() -> Self {
         SymTable {
@@ -132,14 +154,26 @@ impl Vm {
     const MAX_STACK: usize = 65536;
 
     pub fn new(stdout: Stdout, stderr: Stderr) -> Self {
-        Vm {
+        let mut vm = Vm {
             stdout,
             stderr,
             frames: Vec::new(),
             stack: Vec::new(),
             globals: HashMap::new(),
             symbols: SymTable::new(),
-        }
+        };
+        vm.add_native("clock", 0, native::clock);
+        vm
+    }
+
+    fn add_native(&mut self, name: &str, arity: usize, func: NativeFn) {
+        let native_fn = RustFunction {
+            name: name.to_string(),
+            arity,
+            func,
+        };
+        let sym = self.get_symbol(name);
+        self.globals.insert(sym, Value::Builtin(native_fn.into()));
     }
 
     fn arithmetic_args(&mut self) -> Result<(f64, f64)> {
@@ -226,6 +260,7 @@ impl Vm {
                     self.frames.push(frame);
                     current += 1;
                 }
+                // TODO: stack traces
                 Err(e) => return Err(e),
             }
         }
@@ -328,10 +363,10 @@ impl Vm {
                     self.push(constant)
                 }
                 Op::Call => {
-                    let arg_count = inst.operand();
-                    match self.peek(arg_count as usize) {
+                    let arg_count = inst.operand() as usize;
+                    match self.peek(arg_count) {
                         Value::Function(f) => {
-                            let arity = f.borrow().arity as u32;
+                            let arity = f.borrow().arity;
                             if arity != arg_count {
                                 Vm::error(&format!(
                                     "expected {} arguments but got {}",
@@ -341,11 +376,29 @@ impl Vm {
                                 self.frames[current].offset = ip.offset;
                                 return Ok(Some(Frame {
                                     func: f,
-                                    base: self.stack.len()
-                                        - arg_count as usize
-                                        - 1,
+                                    base: self.stack.len() - arg_count - 1,
                                     offset: 0,
                                 }));
+                            }
+                        }
+                        Value::Builtin(f) => {
+                            let arity = f.borrow().arity;
+                            if arity != arg_count {
+                                Vm::error(&format!(
+                                    "expected {} arguments but got {}",
+                                    arity, arg_count
+                                ))
+                            } else {
+                                let func = f.borrow().func;
+                                match func(arg_count, self) {
+                                    Ok(v) => {
+                                        self.stack.truncate(
+                                            self.stack.len() - arg_count + 1,
+                                        );
+                                        self.push(v)
+                                    }
+                                    Err(e) => Err(e),
+                                }
                             }
                         }
                         _ => Vm::error("can only call functions or classes"),

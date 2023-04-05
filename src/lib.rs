@@ -6,7 +6,7 @@ use std::{
     rc::Rc,
 };
 
-use vm::{LoxFunction, LoxString};
+use vm::{LoxFunction, LoxString, RustFunction};
 
 pub use parser::print_tokens;
 pub use parser::scanner::bench_scanner;
@@ -25,6 +25,7 @@ enum Value {
     Number(f64),
     String(Obj<LoxString>),
     Function(Obj<LoxFunction>),
+    Builtin(Obj<RustFunction>),
 }
 
 pub type Stdout = Rc<RefCell<dyn Write>>;
@@ -44,14 +45,8 @@ impl<T> Deref for Obj<T> {
     }
 }
 
-impl From<LoxFunction> for Obj<LoxFunction> {
-    fn from(value: LoxFunction) -> Self {
-        Obj(Rc::new(RefCell::new(value)))
-    }
-}
-
-impl From<LoxString> for Obj<LoxString> {
-    fn from(value: LoxString) -> Self {
+impl<T> From<T> for Obj<T> {
+    fn from(value: T) -> Self {
         Obj(Rc::new(RefCell::new(value)))
     }
 }
@@ -68,6 +63,12 @@ impl PartialEq for Obj<LoxString> {
     }
 }
 
+impl PartialEq for Obj<RustFunction> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(self, other)
+    }
+}
+
 impl Value {
     const TRUE: Value = Value::Boolean(true);
     const FALSE: Value = Value::Boolean(false);
@@ -81,6 +82,7 @@ impl Display for Value {
             Value::Number(v) => v.fmt(f),
             Value::String(v) => v.borrow().fmt(f),
             Value::Function(v) => v.borrow().fmt(f),
+            Value::Builtin(v) => v.borrow().fmt(f),
         }
     }
 }
